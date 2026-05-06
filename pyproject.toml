@@ -1,0 +1,66 @@
+[project]
+name = "useopenclawtomonitorgeeknews"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "GeekNews RSS -> relay -> OpenClaw -> Slack pipeline"
+readme = "README.md"
+
+# ---------------------------------------------------------------------------
+# Ruff — formatter + linter (replaces black, isort, flake8, bugbear, pyupgrade)
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes (undefined names, unused imports, etc.)
+    "I",    # isort (import ordering)
+    "B",    # flake8-bugbear (likely bugs and design issues)
+    "UP",   # pyupgrade (modernize to target Python version)
+    "SIM",  # flake8-simplify (simplify conditionals, comprehensions, etc.)
+    "RUF",  # Ruff-native rules (unused noqa, ambiguous names, etc.)
+]
+# Allow autofix for all enabled rules that support it
+fixable = ["ALL"]
+# Do not remove unused imports automatically — developer should decide
+unfixable = ["F401"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+# ---------------------------------------------------------------------------
+# mypy — strict type checking
+# ---------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+# Show error codes so inline ignores can be specific
+show_error_codes = true
+# Incremental mode for faster re-checks
+incremental = true
+
+# feedparser has no PEP 561 stubs and no third-party stubs package
+[[tool.mypy.overrides]]
+module = "feedparser.*"
+ignore_missing_imports = true
+
+# python-json-logger has no bundled stubs
+[[tool.mypy.overrides]]
+module = "pythonjsonlogger.*"
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
