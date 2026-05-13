@@ -13,3 +13,7 @@ __pycache__/
 poller/seen.sqlite
 relay/relay_seen.sqlite
 *.log
+
+# IDE
+.idea/
+.vscode/

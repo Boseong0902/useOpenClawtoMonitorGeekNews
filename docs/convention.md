@@ -481,3 +481,85 @@ CLAUDE.md (session entry point)
         ├── pyproject.toml       (Ruff + mypy config — commit-time enforcement)
         └── .pre-commit-config.yaml  (pre-commit hooks)
 ```
+
+---
+
+## 13. Pull Request Descriptions
+
+### Authoring rule
+
+When the user asks for a PR description (e.g. "PR 본문 만들어줘", "PR description 써줘",
+or `gh pr create` is about to be invoked), the description **must** follow the format below.
+The format is enforced — do not omit a required section, do not invent new top-level sections,
+and do not reorder. If a required section has no content, write "N/A" with a one-line reason
+rather than dropping the heading.
+
+### Required sections (in order)
+
+```markdown
+## Summary
+
+- <한국어 bullet — 무엇이 / 왜 바뀌었는지, "WHY" 중심으로 1-3줄>
+- <필요 시 추가 bullet>
+
+## Changes
+
+- `<path/to/file.py>` — <변경 요약>
+- `<path/to/other.py>` — <변경 요약>
+- <파일이 많으면 디렉터리 단위로 묶어도 됨>
+
+## Test plan
+
+- [ ] `ruff check` / `ruff format --check` 통과
+- [ ] `mypy --strict` 통과
+- [ ] `pytest` 통과 (관련 테스트: `tests/relay/test_xxx.py::test_yyy`)
+- [ ] <수동 검증 단계가 있으면 명시>
+```
+
+### Title rule
+
+PR title은 Conventional Commits (§9)와 동일한 포맷을 따른다.
+영어, ≤72자, imperative mood, 마침표 없음.
+브랜치에 커밋이 하나뿐이면 그 커밋 제목을 그대로 사용해도 좋다.
+
+### Formatting rules
+
+- 모든 섹션 헤딩은 `##` (h2) 고정. h1/h3 사용 금지.
+- Summary는 bullet list (`-`)로 시작. 단락 산문 금지.
+- Changes는 백틱으로 감싼 파일/디렉터리 경로로 시작.
+- Test plan은 GitHub-flavored checkbox (`- [ ]`)로 작성. 통과 항목이 있어도 PR 작성 시점에는 unchecked로 둔다 (리뷰어가 검증).
+- "Generated with Claude Code" 같은 도구 서명 footer 금지. 본문은 위 3개 섹션으로 끝낸다.
+
+### Example
+
+```markdown
+## Summary
+
+- relay 웹훅에 `X-Webhook-Secret` 헤더 검증 추가. 외부 호출이 인증 없이 들어오면 401로 차단.
+- 누락/불일치 모두 동일하게 401 처리해 enumeration 방지.
+
+## Changes
+
+- `relay/server.py` — `verify_secret` 의존성 추가, `/webhook/geeknews` 라우트에 부착.
+- `tests/relay/test_auth.py` — 미인증 / 잘못된 시크릿 / 정상 케이스 3종 추가.
+
+## Test plan
+
+- [ ] `ruff check` 통과
+- [ ] `mypy --strict relay` 통과
+- [ ] `pytest tests/relay/test_auth.py` 통과
+- [ ] `.env` 의 `RELAY_SHARED_SECRET` 로컬 검증 (curl로 401/200 확인)
+```
+
+### `gh pr create` invocation
+
+`gh pr create --body` 에 본문을 넘길 때는 `cat <<'EOF' ... EOF` HEREDOC을 사용한다
+(개행과 마크다운이 그대로 보존되도록). title과 body를 분리해 호출:
+
+```bash
+gh pr create --title "feat(relay): enforce X-Webhook-Secret header check" --body "$(cat <<'EOF'
+## Summary
+...
+EOF
+)"
+```

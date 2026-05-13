@@ -32,4 +32,7 @@ repos:
           - fastapi
           - pydantic
           - httpx
+          - python-dotenv
+          - python-json-logger
+          - pytest
           - types-requests
