@@ -8,17 +8,27 @@ relay 모듈을 import 하지 않는다 — 정규화 로직은 일부러 복사
 from __future__ import annotations
 
 import logging
+import os
+import sqlite3
+import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 import feedparser
 import requests
+from dotenv import load_dotenv
+from pythonjsonlogger import jsonlogger
+
+from poller.seen_store import init_db, is_seen, mark_seen
 
 logger = logging.getLogger(__name__)
 
 _EXCERPT_SLICE_LEN = 250
 _RELAY_POST_TIMEOUT_S = 10.0
+_DEFAULT_SEEN_DB_PATH = "poller/seen.sqlite"
+_CONFIGURED_FLAG = "_poller_json_logging_configured"
 
 
 @dataclass(frozen=True)
@@ -220,3 +230,155 @@ def post_to_relay(
         openclaw_status=openclaw_status,
         http_status=response.status_code,
     )
+
+
+def configure_logging() -> logging.Logger:
+    """Install JSON formatter + console/file handlers on the root logger (idempotent).
+
+    docs/convention.md §5 의 5필드 (timestamp, guid_or_url, dedupe_decision,
+    openclaw_status, slack_delivered) 를 relay 로그와 같은 구조로 남기기 위함 —
+    화면 캡처 #4 의 end-to-end log trace 가 동일 grep 으로 연결되도록.
+    """
+    root = logging.getLogger()
+    if getattr(root, _CONFIGURED_FLAG, False):
+        return root
+    root.setLevel(logging.INFO)
+    formatter = jsonlogger.JsonFormatter()  # type: ignore[attr-defined]
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    root.addHandler(console_handler)
+
+    log_file = os.environ.get("LOG_FILE", "poller.log")
+    try:
+        file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+    except OSError as exc:
+        root.warning(
+            "log_file_open_failed",
+            extra={"log_file": log_file, "error": str(exc)},
+        )
+
+    setattr(root, _CONFIGURED_FLAG, True)
+    return root
+
+
+def _log_poller_decision(
+    *,
+    guid_or_url: str,
+    dedupe_decision: Literal["pass", "skip"],
+    openclaw_status: int | None,
+) -> None:
+    """relay 와 동일한 5필드 schema 로 한 줄 JSON 로그.
+
+    `slack_delivered` 는 poller 가 직접 알 수 없으므로 항상 None — relay 로그에서
+    동일 guid_or_url 로 grep 해서 합치는 흐름 (스크린샷 #4).
+    """
+    logger.info(
+        "poller_decision",
+        extra={
+            "timestamp": datetime.now(UTC).isoformat(),
+            "guid_or_url": guid_or_url,
+            "dedupe_decision": dedupe_decision,
+            "openclaw_status": openclaw_status,
+            "slack_delivered": None,
+        },
+    )
+
+
+def _required_env(name: str) -> str | None:
+    """Return env value or None (caller logs CRITICAL and exits)."""
+    value = os.environ.get(name, "").strip()
+    return value or None
+
+
+def main() -> int:
+    """Cron one-shot 엔트리포인트. 정상 흐름 0, 환경 누락 등 fatal 은 비-0 반환."""
+    load_dotenv()
+    configure_logging()
+
+    rss_feed_url = _required_env("RSS_FEED_URL")
+    relay_url = _required_env("RELAY_URL")
+    relay_secret = _required_env("RELAY_SHARED_SECRET")
+    if not rss_feed_url or not relay_url or not relay_secret:
+        logger.critical(
+            "poller_missing_env",
+            extra={
+                "rss_feed_url_set": bool(rss_feed_url),
+                "relay_url_set": bool(relay_url),
+                "relay_secret_set": bool(relay_secret),
+            },
+        )
+        return 2
+
+    seen_db_path = os.environ.get("POLLER_SEEN_DB_PATH", _DEFAULT_SEEN_DB_PATH)
+
+    try:
+        conn = init_db(seen_db_path)
+    except sqlite3.Error as exc:
+        logger.critical(
+            "poller_seen_db_open_failed",
+            extra={"path": seen_db_path, "error": exc.__class__.__name__},
+        )
+        return 3
+
+    try:
+        entries = fetch_feed(rss_feed_url)
+        logger.info("poller_fetched", extra={"count": len(entries), "url": rss_feed_url})
+
+        for entry in entries:
+            key = dedupe_key(entry)
+            try:
+                if is_seen(conn, key):
+                    _log_poller_decision(
+                        guid_or_url=key,
+                        dedupe_decision="skip",
+                        openclaw_status=None,
+                    )
+                    continue
+            except sqlite3.Error as exc:
+                logger.error(
+                    "poller_seen_check_failed",
+                    extra={"guid_or_url": key, "error": exc.__class__.__name__},
+                )
+                continue
+
+            resp = post_to_relay(entry, relay_url=relay_url, secret=relay_secret)
+            if resp is None:
+                # 실패 — seen 에 기록하지 않음. 다음 cron tick 이 재시도.
+                _log_poller_decision(
+                    guid_or_url=key,
+                    dedupe_decision="pass",
+                    openclaw_status=None,
+                )
+                continue
+
+            now = datetime.now(UTC)
+            try:
+                mark_seen(
+                    conn,
+                    key,
+                    entry.title,
+                    now,
+                    relay_status=resp.http_status,
+                    matched=resp.status == "matched",
+                )
+            except sqlite3.Error as exc:
+                logger.error(
+                    "poller_seen_mark_failed",
+                    extra={"guid_or_url": key, "error": exc.__class__.__name__},
+                )
+            _log_poller_decision(
+                guid_or_url=key,
+                dedupe_decision="pass",
+                openclaw_status=resp.openclaw_status,
+            )
+    finally:
+        conn.close()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
