@@ -7,6 +7,7 @@ plan.md §"SeenStore Schema" 의 스키마를 그대로 재사용한다 (poller 
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,6 +16,11 @@ if TYPE_CHECKING:
     from datetime import datetime
 
 _DEDUPE_WINDOW = timedelta(hours=24)
+
+# 모듈이 직접 소유하는 직렬화 락 — async 라우트가 asyncio.to_thread 로 동시에 호출하면
+# sqlite3.Connection (check_same_thread=False) 가 InterfaceError 를 던질 수 있어
+# 모든 read/write 를 단일 락 아래에서 수행한다. 라우트는 동시에 호출해도 안전하다.
+_DB_LOCK = threading.Lock()
 
 _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS seen (
@@ -42,7 +48,8 @@ def init_db(path: str | Path) -> sqlite3.Connection:
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
     # check_same_thread=False — async 라우트가 asyncio.to_thread 로 호출하면
-    # 워커 스레드가 매번 달라지므로 thread 체크를 끄고, 직렬화는 호출부 (단일 라우트)에 맡긴다.
+    # 워커 스레드가 매번 달라지므로 thread 체크를 끈다. 직렬화는 본 모듈의 _DB_LOCK
+    # 이 직접 책임지며, 라우트는 has_recent_match/record_match 를 동시에 호출해도 안전하다.
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.execute(_CREATE_TABLE_SQL)
     conn.execute(_CREATE_INDEX_SQL)
@@ -57,11 +64,12 @@ def has_recent_match(conn: sqlite3.Connection, key: str, now: datetime) -> bool:
     seen_at >= (now - 24h).isoformat() 로 비교한다.
     """
     threshold = (now - _DEDUPE_WINDOW).isoformat()
-    cursor = conn.execute(
-        "SELECT 1 FROM seen WHERE key = ? AND matched = 1 AND seen_at >= ? LIMIT 1",
-        (key, threshold),
-    )
-    row = cursor.fetchone()
+    with _DB_LOCK:
+        cursor = conn.execute(
+            "SELECT 1 FROM seen WHERE key = ? AND matched = 1 AND seen_at >= ? LIMIT 1",
+            (key, threshold),
+        )
+        row = cursor.fetchone()
     return row is not None
 
 
@@ -77,11 +85,12 @@ def record_match(
     INSERT OR REPLACE 로 같은 key 가 다시 매칭되면 seen_at 을 최신으로 밀어
     24h 윈도우가 마지막 매칭 시점부터 다시 시작되도록 한다.
     """
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO seen (key, title, seen_at, relay_status, matched)
-        VALUES (?, ?, ?, ?, 1)
-        """,
-        (key, title, now.isoformat(), openclaw_status),
-    )
-    conn.commit()
+    with _DB_LOCK:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO seen (key, title, seen_at, relay_status, matched)
+            VALUES (?, ?, ?, ?, 1)
+            """,
+            (key, title, now.isoformat(), openclaw_status),
+        )
+        conn.commit()

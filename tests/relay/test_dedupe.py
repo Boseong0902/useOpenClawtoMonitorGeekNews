@@ -73,6 +73,9 @@ def test_same_url_different_query_strings_dedupes(client: TestClient) -> None:
     assert route.call_count == 1
 
 
+# 25h 경과를 흉내내려 SQLite 행을 직접 mutate — 본 함수는 lifespan 의 연결과 다른 connection 을
+# 잠시 열어 UPDATE 후 닫는다. SQLite 기본(deferred) 모드에서는 안전하지만, 추후 WAL 활성화 시
+# 락 경합이 발생할 수 있음을 인지하고 둔다.
 @respx.mock
 def test_seen_row_older_than_24h_does_not_dedupe(client: TestClient) -> None:
     """seen_at 이 25시간 전으로 박혀 있으면 dedupe 윈도우 밖 — 두 번째 호출도 OpenClaw 를 친다."""

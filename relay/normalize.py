@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from urllib.parse import urlsplit, urlunsplit
 
-from relay.models import WebhookPayload
-
 
 def normalize_url(url: str) -> str:
     """Lowercase scheme/host, drop query+fragment, strip trailing slash.
@@ -30,13 +28,15 @@ def normalize_url(url: str) -> str:
     return urlunsplit((scheme, netloc, path, "", ""))
 
 
-def dedupe_key(payload: WebhookPayload) -> str:
+def dedupe_key(*, guid: str | None, url: str) -> str:
     """Prefer RSS `guid`; fall back to a normalized URL when guid is absent.
 
     plan.md 가 guid 우선을 못박은 이유: guid 는 발행자가 직접 부여하므로
     URL 변경(쿼리 추가, 경로 정리)이 있어도 동일 글로 안정적으로 식별 가능.
+
+    kw-only scalar 시그니처로 두면 poller (PR-06) 가 Pydantic 의존 없이도
+    동일 정책을 그대로 재사용할 수 있다.
     """
-    guid = payload.guid
     if guid:
         return guid
-    return normalize_url(payload.url)
+    return normalize_url(url)

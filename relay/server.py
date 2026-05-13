@@ -34,6 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     seen_db_path = os.environ.get("RELAY_SEEN_DB_PATH", _DEFAULT_SEEN_DB_PATH)
     seen_conn: sqlite3.Connection = init_db(seen_db_path)
+    logger.info("seen_store_opened", extra={"path": str(seen_db_path)})
     app.state.seen_conn = seen_conn
     try:
         async with httpx.AsyncClient() as client:
@@ -84,11 +85,14 @@ async def webhook_geeknews(
     payload: WebhookPayload,
     _: None = Depends(verify_secret),
 ) -> JSONResponse:
-    key = dedupe_key(payload)
+    key = dedupe_key(guid=payload.guid, url=payload.url)
     now = datetime.now(UTC)
     seen_conn: sqlite3.Connection = request.app.state.seen_conn
 
     # 24h 안에 같은 key 가 matched 였으면 OpenClaw 호출 없이 short-circuit.
+    # NOTE: has_recent_match → record_match 사이의 race window 는 본 과제 트래픽
+    # (poller 가 5분에 수 건 수준) 에서 허용한다. 동시 동일 key 요청이 모두 "no match"
+    # 를 보고 OpenClaw 까지 도달할 수는 있지만, 다음 사이클에서 dedupe 되므로 무해하다.
     if await asyncio.to_thread(has_recent_match, seen_conn, key, now):
         log_relay_decision(
             logger=logger,

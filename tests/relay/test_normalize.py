@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from relay.models import WebhookPayload
 from relay.normalize import dedupe_key, normalize_url
 
 
@@ -29,17 +28,11 @@ def test_normalize_url(raw: str, expected: str) -> None:
 
 
 def test_dedupe_key_prefers_guid() -> None:
-    payload = WebhookPayload(
-        title="Sample",
-        url="https://example.com/post/1?utm=a",
-        guid="GUID-123",
-    )
-    assert dedupe_key(payload) == "GUID-123"
+    assert dedupe_key(guid="GUID-123", url="https://example.com/post/1?utm=a") == "GUID-123"
 
 
 def test_dedupe_key_falls_back_to_normalized_url() -> None:
-    payload = WebhookPayload(
-        title="Sample",
-        url="HTTPS://EXAMPLE.COM/post/1?utm=a",
+    assert (
+        dedupe_key(guid=None, url="HTTPS://EXAMPLE.COM/post/1?utm=a")
+        == "https://example.com/post/1"
     )
-    assert dedupe_key(payload) == "https://example.com/post/1"
