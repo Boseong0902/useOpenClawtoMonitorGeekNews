@@ -35,4 +35,5 @@ repos:
           - python-dotenv
           - python-json-logger
           - pytest
+          - respx
           - types-requests

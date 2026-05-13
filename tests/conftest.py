@@ -14,6 +14,11 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[TestClie
     """relay.server.app 을 띄운 TestClient — RELAY_SHARED_SECRET=test, LOG_FILE=tmp 로 격리."""
     monkeypatch.setenv("RELAY_SHARED_SECRET", "test")
     monkeypatch.setenv("LOG_FILE", str(tmp_path / "relay.log"))
+    # OpenClaw 호출 시 사용할 환경변수 — respx 가 가로채므로 실제 호스트는 의미 없음.
+    monkeypatch.setenv("OPENCLAW_URL", "http://127.0.0.1:18789/hooks/agent")
+    monkeypatch.setenv("OPENCLAW_HOOK_TOKEN", "test-hook-token")
+    monkeypatch.setenv("OPENCLAW_AGENT_ID", "gn-monitor")
+    monkeypatch.setenv("SLACK_CHANNEL_ID", "C0123456789")
 
     # Env 가 설정된 뒤에 import 해야 configure_logging() 이 tmp LOG_FILE 을 잡는다.
     from relay.server import app
