@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import os
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 import httpx
 from dotenv import load_dotenv
@@ -15,21 +18,31 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from relay.logging_setup import configure_logging, log_relay_decision
 from relay.models import WebhookPayload
+from relay.normalize import dedupe_key
 from relay.openclaw_client import OpenClawClient, OpenClawError
+from relay.seen_store import has_recent_match, init_db, record_match
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_SEEN_DB_PATH = "relay/relay_seen.sqlite"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
-    async with httpx.AsyncClient() as client:
-        # 단위 테스트가 raw httpx 를 갈아끼울 수 있도록 bare client 도 그대로 노출한다.
-        app.state.openclaw_client = client
-        app.state.openclaw_client_wrapper = OpenClawClient(client)
-        yield
+    seen_db_path = os.environ.get("RELAY_SEEN_DB_PATH", _DEFAULT_SEEN_DB_PATH)
+    seen_conn: sqlite3.Connection = init_db(seen_db_path)
+    app.state.seen_conn = seen_conn
+    try:
+        async with httpx.AsyncClient() as client:
+            # 단위 테스트가 raw httpx 를 갈아끼울 수 있도록 bare client 도 그대로 노출한다.
+            app.state.openclaw_client = client
+            app.state.openclaw_client_wrapper = OpenClawClient(client)
+            yield
+    finally:
+        seen_conn.close()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -71,7 +84,24 @@ async def webhook_geeknews(
     payload: WebhookPayload,
     _: None = Depends(verify_secret),
 ) -> JSONResponse:
-    guid_or_url = payload.guid or payload.url
+    key = dedupe_key(payload)
+    now = datetime.now(UTC)
+    seen_conn: sqlite3.Connection = request.app.state.seen_conn
+
+    # 24h 안에 같은 key 가 matched 였으면 OpenClaw 호출 없이 short-circuit.
+    if await asyncio.to_thread(has_recent_match, seen_conn, key, now):
+        log_relay_decision(
+            logger=logger,
+            guid_or_url=key,
+            dedupe_decision="skip",
+            openclaw_status=None,
+            slack_delivered=None,
+        )
+        return JSONResponse(
+            status_code=200,
+            content={"status": "no_reply", "reason": "dedupe"},
+        )
+
     # request.app.state 경유 — 모듈-레벨 app 캡처 대신 런타임 인스턴스를 참조한다.
     wrapper: OpenClawClient = request.app.state.openclaw_client_wrapper
 
@@ -84,7 +114,7 @@ async def webhook_geeknews(
     except OpenClawError:
         log_relay_decision(
             logger=logger,
-            guid_or_url=guid_or_url,
+            guid_or_url=key,
             dedupe_decision="pass",
             openclaw_status=None,
             slack_delivered=None,
@@ -94,7 +124,7 @@ async def webhook_geeknews(
     if result.status == "no_reply":
         log_relay_decision(
             logger=logger,
-            guid_or_url=guid_or_url,
+            guid_or_url=key,
             dedupe_decision="pass",
             openclaw_status=result.http_status,
             slack_delivered=None,
@@ -109,16 +139,26 @@ async def webhook_geeknews(
         # OpenClaw 는 받았지만 Slack 전송이 실패 — 503 으로 분리해 로그 grep 가능하게 한다.
         log_relay_decision(
             logger=logger,
-            guid_or_url=guid_or_url,
+            guid_or_url=key,
             dedupe_decision="pass",
             openclaw_status=result.http_status,
             slack_delivered=False,
         )
         return JSONResponse(status_code=503, content={"error": "slack"})
 
+    # matched + slack 전송 성공 — 24h 윈도우의 기준이 되는 시점이므로 seen store 에 기록.
+    await asyncio.to_thread(
+        record_match,
+        seen_conn,
+        key,
+        payload.title,
+        now,
+        result.http_status,
+    )
+
     log_relay_decision(
         logger=logger,
-        guid_or_url=guid_or_url,
+        guid_or_url=key,
         dedupe_decision="pass",
         openclaw_status=result.http_status,
         slack_delivered=True,
