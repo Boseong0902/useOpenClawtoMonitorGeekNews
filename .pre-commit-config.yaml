@@ -34,4 +34,5 @@ repos:
           - httpx
           - python-dotenv
           - python-json-logger
+          - pytest
           - types-requests
