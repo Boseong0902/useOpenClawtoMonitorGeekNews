@@ -1,2 +1,15 @@
 .omc/
 md/
+
+# Python
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Runtime state / secrets
+.env
+poller/seen.sqlite
+relay/relay_seen.sqlite
+*.log
