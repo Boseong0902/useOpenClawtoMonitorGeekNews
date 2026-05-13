@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 import feedparser
+import requests
 
 logger = logging.getLogger(__name__)
 
 _EXCERPT_SLICE_LEN = 250
+_RELAY_POST_TIMEOUT_S = 10.0
 
 
 @dataclass(frozen=True)
@@ -107,3 +109,114 @@ def dedupe_key(entry: FeedEntry) -> str:
     if entry.guid:
         return entry.guid
     return _normalize_url(entry.url)
+
+
+@dataclass(frozen=True)
+class RelayResponse:
+    """Relay 응답을 caller 가 다루기 쉽도록 정규화한 형태."""
+
+    status: Literal["matched", "no_reply"]
+    openclaw_status: int | None
+    http_status: int
+
+
+def post_to_relay(
+    entry: FeedEntry,
+    *,
+    relay_url: str,
+    secret: str,
+) -> RelayResponse | None:
+    """Forward `entry` to the relay; return `None` on any failure.
+
+    실패 시 None 을 반환하면 caller 는 seen 에 기록하지 않아야 한다 — 다음 cron tick
+    이 재시도할 기회를 보존해야 transient 네트워크 이슈에 강함 (PR-06 spec commit 3 §"Why").
+    `requests.RequestException` (transport), `ValueError` (JSON), `KeyError`
+    (missing fields) 만 narrow catch. 그 외 예외는 caller 까지 전파한다.
+    """
+    body: dict[str, Any] = {
+        "title": entry.title,
+        "url": entry.url,
+        "guid": entry.guid,
+        "excerpt": entry.excerpt,
+        "published_at": entry.published_at,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "X-Webhook-Secret": secret,
+    }
+    try:
+        response = requests.post(
+            relay_url,
+            json=body,
+            headers=headers,
+            timeout=_RELAY_POST_TIMEOUT_S,
+        )
+    except requests.RequestException as exc:
+        logger.error(
+            "relay_post_transport_error",
+            extra={
+                "url": relay_url,
+                "guid_or_url": entry.guid or entry.url,
+                "error": exc.__class__.__name__,
+            },
+        )
+        return None
+
+    if response.status_code < 200 or response.status_code >= 300:
+        # relay 의 4xx/5xx 는 dedupe 미기록으로 — 다음 tick 에서 재시도되도록.
+        logger.error(
+            "relay_post_non_2xx",
+            extra={
+                "url": relay_url,
+                "guid_or_url": entry.guid or entry.url,
+                "relay_status": response.status_code,
+            },
+        )
+        return None
+
+    try:
+        payload = response.json()
+        status_value = payload["status"]
+    except ValueError:
+        logger.error(
+            "relay_post_invalid_json",
+            extra={
+                "url": relay_url,
+                "guid_or_url": entry.guid or entry.url,
+                "relay_status": response.status_code,
+            },
+        )
+        return None
+    except (KeyError, TypeError):
+        logger.error(
+            "relay_post_missing_status",
+            extra={
+                "url": relay_url,
+                "guid_or_url": entry.guid or entry.url,
+                "relay_status": response.status_code,
+            },
+        )
+        return None
+
+    if status_value not in ("matched", "no_reply"):
+        logger.error(
+            "relay_post_unknown_status",
+            extra={
+                "url": relay_url,
+                "guid_or_url": entry.guid or entry.url,
+                "relay_status": response.status_code,
+                "body_status": status_value,
+            },
+        )
+        return None
+
+    openclaw_status_raw = payload.get("openclaw_status") if isinstance(payload, dict) else None
+    openclaw_status: int | None = (
+        openclaw_status_raw if isinstance(openclaw_status_raw, int) else None
+    )
+
+    return RelayResponse(
+        status=status_value,
+        openclaw_status=openclaw_status,
+        http_status=response.status_code,
+    )
