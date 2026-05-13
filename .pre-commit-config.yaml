@@ -32,4 +32,5 @@ repos:
           - fastapi
           - pydantic
           - httpx
+          - python-dotenv
           - types-requests
