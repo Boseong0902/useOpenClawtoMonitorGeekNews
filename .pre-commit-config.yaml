@@ -37,3 +37,4 @@ repos:
           - pytest
           - respx
           - types-requests
+          - requests-mock
