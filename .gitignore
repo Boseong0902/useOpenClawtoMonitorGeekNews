@@ -11,7 +11,7 @@ __pycache__/
 # Runtime state / secrets
 .env
 poller/seen.sqlite
-relay/relay_seen.sqlite
+relay/relay_seen.sqlite*
 *.log
 
 # IDE
