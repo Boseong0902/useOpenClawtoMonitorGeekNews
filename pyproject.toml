@@ -66,6 +66,11 @@ ignore_missing_imports = true
 module = "pythonjsonlogger.*"
 ignore_missing_imports = true
 
+# slack-sdk has no PEP 561 stubs
+[[tool.mypy.overrides]]
+module = "slack_sdk.*"
+ignore_missing_imports = true
+
 # ---------------------------------------------------------------------------
 # pytest
 # ---------------------------------------------------------------------------

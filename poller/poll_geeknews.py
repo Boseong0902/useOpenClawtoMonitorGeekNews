@@ -301,13 +301,30 @@ _OPENCLAW_TIMEOUT_S = 120
 _NO_REPLY_TOKEN = "NO_REPLY"
 
 
+def send_to_slack(text: str, *, channel_id: str, bot_token: str) -> bool:
+    """Slack API로 메시지를 1회만 전송. 성공 시 True."""
+    from slack_sdk import WebClient
+    from slack_sdk.errors import SlackApiError
+
+    client = WebClient(token=bot_token)
+    try:
+        client.chat_postMessage(channel=channel_id, text=text)
+    except SlackApiError as exc:
+        logger.error(
+            "slack_send_failed",
+            extra={"channel": channel_id, "error": str(exc.response["error"])},
+        )
+        return False
+    return True
+
+
 def call_openclaw_agent(
     entry: FeedEntry,
     *,
     agent_id: str,
     slack_channel_id: str,
 ) -> OpenClawResult:
-    """openclaw agent CLI로 에이전트 호출 + Slack 전송."""
+    """openclaw agent CLI로 에이전트 판단만 수행 (Slack 전송은 caller가 직접)."""
     message = f"Title: {entry.title}\nURL: {entry.url}\nExcerpt: {entry.excerpt or ''}"
     cmd = [
         "openclaw",
@@ -316,11 +333,6 @@ def call_openclaw_agent(
         agent_id,
         "--message",
         message,
-        "--deliver",
-        "--reply-channel",
-        "slack",
-        "--reply-to",
-        f"channel:{slack_channel_id}",
         "--timeout",
         str(_OPENCLAW_TIMEOUT_S),
         "--json",
@@ -382,13 +394,15 @@ def main() -> int:
 
     rss_feed_url = _required_env("RSS_FEED_URL")
     slack_channel_id = _required_env("SLACK_CHANNEL_ID")
+    slack_bot_token = _required_env("SLACK_BOT_TOKEN")
     agent_id = os.environ.get("OPENCLAW_AGENT_ID", "gn-monitor")
-    if not rss_feed_url or not slack_channel_id:
+    if not rss_feed_url or not slack_channel_id or not slack_bot_token:
         logger.critical(
             "poller_missing_env",
             extra={
                 "rss_feed_url_set": bool(rss_feed_url),
                 "slack_channel_id_set": bool(slack_channel_id),
+                "slack_bot_token_set": bool(slack_bot_token),
             },
         )
         return 2
@@ -438,6 +452,14 @@ def main() -> int:
                 )
                 continue
 
+            slack_delivered: bool | None = None
+            if result.status == "matched" and result.text:
+                slack_delivered = send_to_slack(
+                    result.text,
+                    channel_id=slack_channel_id,
+                    bot_token=slack_bot_token,
+                )
+
             now = datetime.now(UTC)
             try:
                 mark_seen(
@@ -458,6 +480,11 @@ def main() -> int:
                 dedupe_decision="pass",
                 openclaw_status=200 if result.status == "matched" else None,
             )
+            if slack_delivered is not None:
+                logger.info(
+                    "slack_delivered",
+                    extra={"guid_or_url": key, "delivered": slack_delivered},
+                )
     finally:
         conn.close()
 
