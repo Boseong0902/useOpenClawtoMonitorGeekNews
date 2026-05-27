@@ -6,4 +6,4 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"
-exec python3 -m poller.poll_geeknews
+exec .venv/bin/python -m poller.poll_geeknews
