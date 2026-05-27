@@ -367,8 +367,11 @@ def call_openclaw_agent(
 
     try:
         payload = json.loads(result.stdout)
-        text = payload["payloads"][0]["text"]
-    except (json.JSONDecodeError, KeyError, IndexError):
+        # gateway 모드: {"result": {"payloads": [...]}}
+        # embedded 모드: {"payloads": [...]}
+        payloads = payload.get("result", payload).get("payloads", payload.get("payloads"))
+        text = payloads[0]["text"]
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError):
         logger.error(
             "openclaw_cli_parse_failed",
             extra={"stdout": result.stdout[:500], "entry_url": entry.url},
