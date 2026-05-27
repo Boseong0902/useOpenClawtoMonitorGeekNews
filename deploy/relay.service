@@ -1,0 +1,19 @@
+[Unit]
+Description=GeekNews Relay — FastAPI webhook receiver
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=geeknews
+Group=geeknews
+WorkingDirectory=/opt/geeknews
+EnvironmentFile=/opt/geeknews/.env
+ExecStart=/opt/geeknews/.venv/bin/uvicorn relay.server:app --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

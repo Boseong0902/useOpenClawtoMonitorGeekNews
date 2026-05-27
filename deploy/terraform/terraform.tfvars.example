@@ -1,0 +1,4 @@
+aws_region    = "ap-northeast-2"
+instance_type = "t2.micro"
+key_name      = "slunch-backend-dev"
+my_ip_cidr    = "0.0.0.0/0"  # TODO: 본인 IP로 제한 (e.g. "123.45.67.89/32")

@@ -1,0 +1,206 @@
+---
+- name: Deploy GeekNews Monitor
+  hosts: geeknews
+  become: true
+  vars:
+    project_dir: /opt/geeknews
+    repo_url: https://github.com/Boseong0902/useOpenClawtoMonitorGeekNews.git
+    python_version: python3.11
+    node_major: "20"
+    ollama_model: "qwen2.5:7b"
+    # secrets — ansible-vault 또는 --extra-vars 로 전달
+    relay_shared_secret: "CHANGE_ME"
+    openclaw_hook_token: "CHANGE_ME"
+    slack_channel_id: "CHANGE_ME"
+
+  handlers:
+    - name: restart relay
+      systemd:
+        name: relay
+        state: restarted
+        daemon_reload: true
+
+    - name: restart openclaw
+      systemd:
+        name: openclaw
+        state: restarted
+
+  tasks:
+    # ──────────────────────────────────────────────
+    # 1. System packages
+    # ──────────────────────────────────────────────
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install system packages
+      apt:
+        name:
+          - "{{ python_version }}"
+          - "{{ python_version }}-venv"
+          - python3-pip
+          - git
+          - curl
+          - sqlite3
+        state: present
+
+    # ──────────────────────────────────────────────
+    # 2. Node.js (for OpenClaw)
+    # ──────────────────────────────────────────────
+    - name: Add NodeSource GPG key
+      shell: curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
+      args:
+        creates: /usr/share/keyrings/nodesource.gpg
+
+    - name: Add NodeSource repository
+      copy:
+        content: "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_{{ node_major }}.x nodistro main"
+        dest: /etc/apt/sources.list.d/nodesource.list
+
+    - name: Install Node.js
+      apt:
+        name: nodejs
+        state: present
+        update_cache: true
+
+    # ──────────────────────────────────────────────
+    # 3. Ollama
+    # ──────────────────────────────────────────────
+    - name: Install Ollama
+      shell: curl -fsSL https://ollama.com/install.sh | sh
+      args:
+        creates: /usr/local/bin/ollama
+
+    - name: Ensure Ollama service is running
+      systemd:
+        name: ollama
+        state: started
+        enabled: true
+
+    - name: Pull Ollama model
+      command: ollama pull {{ ollama_model }}
+      register: ollama_pull
+      changed_when: "'pulling' in ollama_pull.stdout"
+
+    # ──────────────────────────────────────────────
+    # 4. System user + directories
+    # ──────────────────────────────────────────────
+    - name: Create geeknews system user
+      user:
+        name: geeknews
+        system: true
+        shell: /bin/bash
+        create_home: true
+
+    - name: Create project and log directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: geeknews
+        group: geeknews
+        mode: "0755"
+      loop:
+        - "{{ project_dir }}"
+        - /var/log/geeknews
+
+    # ──────────────────────────────────────────────
+    # 5. Project clone + venv
+    # ──────────────────────────────────────────────
+    - name: Clone project repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ project_dir }}"
+        version: main
+        force: true
+      become_user: geeknews
+
+    - name: Create Python venv
+      command: "{{ python_version }} -m venv {{ project_dir }}/.venv"
+      args:
+        creates: "{{ project_dir }}/.venv/bin/activate"
+      become_user: geeknews
+
+    - name: Install relay requirements
+      pip:
+        requirements: "{{ project_dir }}/relay/requirements.txt"
+        virtualenv: "{{ project_dir }}/.venv"
+      become_user: geeknews
+
+    - name: Install poller requirements
+      pip:
+        requirements: "{{ project_dir }}/poller/requirements.txt"
+        virtualenv: "{{ project_dir }}/.venv"
+      become_user: geeknews
+
+    # ──────────────────────────────────────────────
+    # 6. Environment file
+    # ──────────────────────────────────────────────
+    - name: Deploy .env file
+      template:
+        src: templates/env.j2
+        dest: "{{ project_dir }}/.env"
+        owner: geeknews
+        group: geeknews
+        mode: "0600"
+      notify: restart relay
+
+    # ──────────────────────────────────────────────
+    # 7. Relay systemd service
+    # ──────────────────────────────────────────────
+    - name: Install relay systemd unit
+      copy:
+        src: "{{ project_dir }}/deploy/relay.service"
+        dest: /etc/systemd/system/relay.service
+        remote_src: true
+      notify: restart relay
+
+    - name: Enable and start relay
+      systemd:
+        name: relay
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    # ──────────────────────────────────────────────
+    # 8. Poller cron
+    # ──────────────────────────────────────────────
+    - name: Install poller cron job
+      copy:
+        src: "{{ project_dir }}/deploy/geeknews-poller.cron"
+        dest: /etc/cron.d/geeknews-poller
+        remote_src: true
+        mode: "0644"
+
+    # ──────────────────────────────────────────────
+    # 9. OpenClaw (수동 설정용 준비만 — 실제 설정은 사용자가 직접)
+    # ──────────────────────────────────────────────
+    - name: Install OpenClaw globally
+      npm:
+        name: openclaw
+        global: true
+      tags: [openclaw]
+
+    - name: Deploy OpenClaw config template
+      copy:
+        src: "{{ project_dir }}/deploy/openclaw.config.json"
+        dest: "{{ project_dir }}/openclaw.config.json"
+        remote_src: true
+        owner: geeknews
+        group: geeknews
+        mode: "0600"
+      tags: [openclaw]
+
+    - name: Remind user to configure OpenClaw manually
+      debug:
+        msg: |
+          ╔══════════════════════════════════════════════════════╗
+          ║  OpenClaw 설정을 직접 완료하세요 (📸 캡처 필요)      ║
+          ║                                                      ║
+          ║  1. vim {{ project_dir }}/openclaw.config.json       ║
+          ║     → Slack 토큰, 채널 ID, hook token 입력          ║
+          ║  2. openclaw service install                         ║
+          ║  3. sudo systemctl enable --now openclaw             ║
+          ║  4. curl http://127.0.0.1:18789/health              ║
+          ╚══════════════════════════════════════════════════════╝
+      tags: [openclaw]
