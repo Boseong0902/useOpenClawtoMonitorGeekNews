@@ -31,6 +31,7 @@ _EXCERPT_SLICE_LEN = 250
 _RELAY_POST_TIMEOUT_S = 10.0
 _DEFAULT_SEEN_DB_PATH = "poller/seen.sqlite"
 _CONFIGURED_FLAG = "_poller_json_logging_configured"
+_MAX_FEED_ENTRIES = 70
 
 
 @dataclass(frozen=True)
@@ -430,7 +431,7 @@ def main() -> int:
         return 3
 
     try:
-        entries = fetch_feed(rss_feed_url)
+        entries = fetch_feed(rss_feed_url)[:_MAX_FEED_ENTRIES]
         logger.info("poller_fetched", extra={"count": len(entries), "url": rss_feed_url})
 
         for entry in entries:
