@@ -7,9 +7,11 @@ relay 모듈을 import 하지 않는다 — 정규화 로직은 일부러 복사
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -287,6 +289,86 @@ def _log_poller_decision(
     )
 
 
+@dataclass(frozen=True)
+class OpenClawResult:
+    """openclaw agent CLI 호출 결과."""
+
+    status: Literal["matched", "no_reply", "error"]
+    text: str | None
+
+
+_OPENCLAW_TIMEOUT_S = 120
+_NO_REPLY_TOKEN = "NO_REPLY"
+
+
+def call_openclaw_agent(
+    entry: FeedEntry,
+    *,
+    agent_id: str,
+    slack_channel_id: str,
+) -> OpenClawResult:
+    """openclaw agent CLI로 에이전트 호출 + Slack 전송."""
+    message = f"Title: {entry.title}\nURL: {entry.url}\nExcerpt: {entry.excerpt or ''}"
+    cmd = [
+        "openclaw",
+        "agent",
+        "--agent",
+        agent_id,
+        "--message",
+        message,
+        "--deliver",
+        "--reply-channel",
+        "slack",
+        "--reply-to",
+        f"channel:{slack_channel_id}",
+        "--timeout",
+        str(_OPENCLAW_TIMEOUT_S),
+        "--json",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_OPENCLAW_TIMEOUT_S + 30,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("openclaw_cli_timeout", extra={"entry_url": entry.url})
+        return OpenClawResult(status="error", text=None)
+    except OSError as exc:
+        logger.error(
+            "openclaw_cli_exec_failed",
+            extra={"error": exc.__class__.__name__, "entry_url": entry.url},
+        )
+        return OpenClawResult(status="error", text=None)
+
+    if result.returncode != 0:
+        logger.error(
+            "openclaw_cli_nonzero",
+            extra={
+                "returncode": result.returncode,
+                "stderr": result.stderr[:500] if result.stderr else "",
+                "entry_url": entry.url,
+            },
+        )
+        return OpenClawResult(status="error", text=None)
+
+    try:
+        payload = json.loads(result.stdout)
+        text = payload["payloads"][0]["text"]
+    except (json.JSONDecodeError, KeyError, IndexError):
+        logger.error(
+            "openclaw_cli_parse_failed",
+            extra={"stdout": result.stdout[:500], "entry_url": entry.url},
+        )
+        return OpenClawResult(status="error", text=None)
+
+    if text.strip() == _NO_REPLY_TOKEN:
+        return OpenClawResult(status="no_reply", text=None)
+
+    return OpenClawResult(status="matched", text=text)
+
+
 def _required_env(name: str) -> str | None:
     """Return env value or None (caller logs CRITICAL and exits)."""
     value = os.environ.get(name, "").strip()
@@ -299,15 +381,14 @@ def main() -> int:
     configure_logging()
 
     rss_feed_url = _required_env("RSS_FEED_URL")
-    relay_url = _required_env("RELAY_URL")
-    relay_secret = _required_env("RELAY_SHARED_SECRET")
-    if not rss_feed_url or not relay_url or not relay_secret:
+    slack_channel_id = _required_env("SLACK_CHANNEL_ID")
+    agent_id = os.environ.get("OPENCLAW_AGENT_ID", "gn-monitor")
+    if not rss_feed_url or not slack_channel_id:
         logger.critical(
             "poller_missing_env",
             extra={
                 "rss_feed_url_set": bool(rss_feed_url),
-                "relay_url_set": bool(relay_url),
-                "relay_secret_set": bool(relay_secret),
+                "slack_channel_id_set": bool(slack_channel_id),
             },
         )
         return 2
@@ -344,9 +425,12 @@ def main() -> int:
                 )
                 continue
 
-            resp = post_to_relay(entry, relay_url=relay_url, secret=relay_secret)
-            if resp is None:
-                # 실패 — seen 에 기록하지 않음. 다음 cron tick 이 재시도.
+            result = call_openclaw_agent(
+                entry,
+                agent_id=agent_id,
+                slack_channel_id=slack_channel_id,
+            )
+            if result.status == "error":
                 _log_poller_decision(
                     guid_or_url=key,
                     dedupe_decision="pass",
@@ -361,8 +445,8 @@ def main() -> int:
                     key,
                     entry.title,
                     now,
-                    relay_status=resp.http_status,
-                    matched=resp.status == "matched",
+                    relay_status=0,
+                    matched=result.status == "matched",
                 )
             except sqlite3.Error as exc:
                 logger.error(
@@ -372,7 +456,7 @@ def main() -> int:
             _log_poller_decision(
                 guid_or_url=key,
                 dedupe_decision="pass",
-                openclaw_status=resp.openclaw_status,
+                openclaw_status=200 if result.status == "matched" else None,
             )
     finally:
         conn.close()

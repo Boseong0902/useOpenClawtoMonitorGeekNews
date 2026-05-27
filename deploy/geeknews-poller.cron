@@ -1,3 +1,3 @@
 # GeekNews RSS poller — every 5 minutes
 # Install: sudo cp deploy/geeknews-poller.cron /etc/cron.d/geeknews-poller
-*/5 * * * * geeknews /opt/geeknews/poller/run.sh >> /var/log/geeknews/poller.log 2>&1
+*/5 * * * * ubuntu /opt/geeknews/poller/run.sh >> /var/log/geeknews/poller.log 2>&1

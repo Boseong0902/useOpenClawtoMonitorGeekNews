@@ -14,6 +14,14 @@ poller/seen.sqlite
 relay/relay_seen.sqlite*
 *.log
 
+# Terraform
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate*
+deploy/terraform/terraform.tfvars
+
+# Ansible
+deploy/ansible/inventory.ini
+
 # IDE
 .idea/
 .vscode/

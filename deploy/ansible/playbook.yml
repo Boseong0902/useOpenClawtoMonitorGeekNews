@@ -6,7 +6,7 @@
     project_dir: /opt/geeknews
     repo_url: https://github.com/Boseong0902/useOpenClawtoMonitorGeekNews.git
     python_version: python3.11
-    node_major: "20"
+    node_major: "22"
     ollama_model: "qwen2.5:7b"
     # secrets — ansible-vault 또는 --extra-vars 로 전달
     relay_shared_secret: "CHANGE_ME"
@@ -43,6 +43,7 @@
           - git
           - curl
           - sqlite3
+          - acl
         state: present
 
     # ──────────────────────────────────────────────
@@ -178,6 +179,7 @@
     - name: Install OpenClaw globally
       npm:
         name: openclaw
+        version: latest
         global: true
       tags: [openclaw]
 
