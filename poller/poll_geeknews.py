@@ -325,6 +325,9 @@ def call_openclaw_agent(
     slack_channel_id: str,
 ) -> OpenClawResult:
     """openclaw agent CLI로 에이전트 판단만 수행 (Slack 전송은 caller가 직접)."""
+    import uuid
+
+    session_key = f"poller-{uuid.uuid4().hex[:12]}"
     message = f"Title: {entry.title}\nURL: {entry.url}\nExcerpt: {entry.excerpt or ''}"
     cmd = [
         "openclaw",
@@ -333,6 +336,8 @@ def call_openclaw_agent(
         agent_id,
         "--message",
         message,
+        "--session-key",
+        session_key,
         "--timeout",
         str(_OPENCLAW_TIMEOUT_S),
         "--json",
@@ -367,18 +372,21 @@ def call_openclaw_agent(
 
     try:
         payload = json.loads(result.stdout)
-        # gateway 모드: {"result": {"payloads": [...]}}
-        # embedded 모드: {"payloads": [...]}
-        payloads = payload.get("result", payload).get("payloads", payload.get("payloads"))
-        text = payloads[0]["text"]
-    except (json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError):
+        # gateway: {"result": {"payloads": [...]}}  /  embedded: {"payloads": [...]}
+        inner = payload.get("result", payload)
+        payloads: list[dict[str, Any]] = inner.get("payloads", [])
+    except (json.JSONDecodeError, AttributeError):
         logger.error(
             "openclaw_cli_parse_failed",
             extra={"stdout": result.stdout[:500], "entry_url": entry.url},
         )
         return OpenClawResult(status="error", text=None)
 
-    if text.strip() == _NO_REPLY_TOKEN:
+    if not payloads:
+        return OpenClawResult(status="no_reply", text=None)
+
+    text = payloads[0].get("text", "")
+    if not text or text.strip() == _NO_REPLY_TOKEN:
         return OpenClawResult(status="no_reply", text=None)
 
     return OpenClawResult(status="matched", text=text)
